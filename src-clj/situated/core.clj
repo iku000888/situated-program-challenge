@@ -8,6 +8,11 @@
            [java.time Instant LocalDate LocalDateTime]))
 
 (defrecord VenueType [v]
+  j/ISQLValue
+  (j/sql-value [this]
+    (doto (PGobject.)
+      (.setType "venue_type")
+      (.setValue v)))
   f/ToSQL
   (f/-to-sql [this]
     (doto (PGobject.)
@@ -188,6 +193,21 @@
               :street1 a1
               :street2 a2}))
 
+(defmethod store :store-online-venue
+  [k {g :group-id
+      vname :venue-name
+      url :url}
+   con]
+  (let [[created] (j/insert! con
+                             :venues
+                             {:group_id g
+                              :venue_type (->venue-type "online")
+                              :url url
+                              :name vname})]
+    {:online-venue-id (:id created)
+     :venue-name vname
+     :url url}))
+
 (defmethod store :store-group
   [k {g :group-name
       admins :admin-member-ids} con]
@@ -221,4 +241,20 @@
      :password "password123"
      :ssl false})
 
-  (fetch :venues nil con))
+  (fetch :venues nil con)
+  (fetch :online-venues {:group-id 1} con)
+  (store :store-venue
+         {:group-id 1
+          :venue-name "new venue"
+          :address {:postal-code 3833
+                    :prefecture "Okayama"
+                    :city "Kurashiki"
+                    :address1 "street"}}
+         con)
+
+  (store :store-online-venue
+         {:group-id 1
+          :venue-name "new venue"
+          :url "foo.example.com"}
+         con)
+  )
