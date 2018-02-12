@@ -56,9 +56,10 @@
                    {:id :member-id}))
 
 (def format-venue
-  (let [address-keys [:postal_code :prefecture :city :street1 :street2]]
+  (let [address-keys [:postal_code :prefecture :city :street1 :street2]
+        dissoc-keys [:venue_type :group_id :url]]
     (comp
-     #(apply dissoc % address-keys)
+     #(apply dissoc % (into address-keys dissoc-keys))
      (fn [v]
        (let [address (-> (select-keys v address-keys)
                          (set/rename-keys {:street1 :address1
@@ -66,6 +67,11 @@
          (assoc v :address address)))
      #(set/rename-keys % {:id :venue-id
                           :name :venue-name}))))
+
+(defn format-online-venue [{:keys [id name url]}]
+  {:online-venue-id id
+   :venue-name name
+   :url url})
 
 (defn venue-query [gid]
   (-> (s/select :*)
@@ -88,7 +94,7 @@
                    ~(->VenueType "'online'")))
       f/format
       (->> (j/query con)
-           (map format-venue))))
+           (map format-online-venue))))
 
 (defmethod fetch :groups
   [k {gid :group-id} con]
@@ -106,6 +112,8 @@
         (set/rename-keys {:id :event-id})
         (assoc :venue
                (format-venue (select*-by-id con :venues (:venue_id m))))
+        (assoc :online-venue
+               (format-online-venue (select*-by-id con :venues (:online_venue_id m))))
         (assoc :members
                (-> (s/select :*)
                    (s/from :meetups-members)
@@ -144,14 +152,20 @@
   (fn [k params con] k))
 
 (defmethod store :store-meetup
-  [k {t :title g :group-id s :start-at e :end-at v :venue-id} con]
-  (j/insert! con
-             :meetups
-             {:title t
-              :group_id g
-              :start_at (Timestamp/from (Instant/parse s))
-              :end_at (Timestamp/from (Instant/parse e))
-              :venue_id v}))
+  [k {t :title g :group-id s :start-at e :end-at
+      v :venue-id ov :online-venue-id} con]
+  (let [[stored]
+        (j/insert! con
+                   :meetups
+                   {:title t
+                    :group_id g
+                    :start_at (Timestamp/from (Instant/parse s))
+                    :end_at (Timestamp/from (Instant/parse e))
+                    :venue_id v
+                    :online_venue_id ov})]
+    (fetch :meetup-by-id
+           {:group-id g :event-id (:id stored)}
+           con)))
 
 (defmethod store :store-member
   [k {f :first-name l :last-name e :email} con]
@@ -256,5 +270,13 @@
          {:group-id 1
           :venue-name "new venue"
           :url "foo.example.com"}
+         con)
+  (store :store-meetup
+         {:title "Learn datalog today"
+          :group-id 1
+          :start-at "2018-02-12T15:49:00.461Z"
+          :end-at "2018-02-12T15:49:00.461Z"
+          :venue-id 1
+          :online-venue-id 17}
          con)
   )
