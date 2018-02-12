@@ -1,5 +1,6 @@
 (ns situated.core
-  (:require [clojure.java.jdbc :as j]
+  (:require [camel-snake-kebab.core :refer [->kebab-case]]
+            [clojure.java.jdbc :as j]
             [clojure.set :as set]
             [stch.sql :as s]
             [stch.sql.format :as f])
@@ -96,12 +97,36 @@
       (->> (j/query con)
            (map format-online-venue))))
 
+(defn find-group-admins [gid con]
+  (j/query con
+           (-> (s/select :member-id :first-name :last-name :email)
+               (s/from [:groups_members :gm])
+               (s/join :members
+                       '(= :gm.member-id :members.id ))
+               (s/where `(= :group-id ~gid))
+               f/format)
+           {:identifiers ->kebab-case}))
+
+(defn find-group-venues [gid con]
+  (let [venues (->> (j/query con
+                             (-> (s/select :*)
+                                 (s/from :venues)
+                                 (s/where `(= :group-id ~gid))
+                                 f/format)
+                             {:identifiers ->kebab-case})
+                    (group-by :venue-type))]
+    {:online-venues (map format-online-venue (get venues "online"))
+     :venues (map format-venue (get venues "physical"))}))
+
 (defmethod fetch :groups
-  [k {gid :group-id} con]
+  [k _ con]
   (let []
     (->> (select* con :groups)
          (map (comp
                #(dissoc % :created_at)
+               #(assoc % :meetups (fetch :meetups {:group-id (:group-id %)} con))
+               #(merge % (find-group-venues (:group-id %) con))
+               #(assoc % :admin (find-group-admins (:group-id %) con))
                #(set/rename-keys % {:id :group-id
                                     :name :group-name}))))))
 
@@ -127,7 +152,8 @@
 
 (defmethod fetch :meetups
   [k {gid :group-id} con]
-  (->> (select* con :meetups)
+  (->> (select* con :meetups
+                #(s/where % `(= :group-id ~gid)))
        (map (fn [{:as m v :venue_id e :id ov :online_venue_id}]
               (-> m
                   (set/rename-keys {:id :event-id})
@@ -283,5 +309,13 @@
          con)
   (fetch :meetups
          {:group-id 1}
+         con)
+  (fetch :groups
+         {}
+         con)
+  (store :join-group
+         {:group-id 1
+          :id 1
+          :admin true}
          con)
   )
