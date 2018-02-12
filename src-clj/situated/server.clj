@@ -18,6 +18,8 @@
     "groups" :groups
     ["groups/" [long :group-id]] {"/venues" {:get :venues
                                              :post :store-venue}
+                                  "/online-venues" {:get :online-venues
+                                                    :post :store-online-venues}
                                   "/meetups" {:get :meetups
                                               :post :store-meetup}
                                   ["/meetups/" [long :event-id]] :meetup-by-id}}])

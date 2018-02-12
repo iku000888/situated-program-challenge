@@ -1,10 +1,24 @@
 (ns situated.core
-  (:require [clojure.java.jdbc :as j]
+  (:require [camel-snake-kebab.core :refer [->kebab-case]]
+            [clojure.java.jdbc :as j]
             [clojure.set :as set]
             [stch.sql :as s]
             [stch.sql.format :as f])
-  (:import java.sql.Timestamp
+  (:import org.postgresql.util.PGobject
+           java.sql.Timestamp
            [java.time Instant LocalDate LocalDateTime]))
+
+(defrecord VenueType [v]
+  j/ISQLValue
+  (j/sql-value [this]
+    (doto (PGobject.)
+      (.setType "venue_type")
+      (.setValue v)))
+  f/ToSQL
+  (f/-to-sql [this]
+    (doto (PGobject.)
+      (.setType "venue_type")
+      (.setValue v))))
 
 (defn add-vals [con tbl vals]
   (j/execute! con
@@ -43,9 +57,10 @@
                    {:id :member-id}))
 
 (def format-venue
-  (let [address-keys [:postal_code :prefecture :city :street1 :street2]]
+  (let [address-keys [:postal_code :prefecture :city :street1 :street2]
+        dissoc-keys [:venue_type :group_id :url]]
     (comp
-     #(apply dissoc % address-keys)
+     #(apply dissoc % (into address-keys dissoc-keys))
      (fn [v]
        (let [address (-> (select-keys v address-keys)
                          (set/rename-keys {:street1 :address1
@@ -54,21 +69,64 @@
      #(set/rename-keys % {:id :venue-id
                           :name :venue-name}))))
 
-(defmethod fetch :venues
-  [k {gid :group-id} con]
+(defn format-online-venue [{:keys [id name url]}]
+  {:online-venue-id id
+   :venue-name name
+   :url url})
+
+(defn venue-query [gid]
   (-> (s/select :*)
       (s/from :venues)
-      (s/where `(= :group_id ~gid))
+      (s/where `(= :group_id ~gid))))
+
+(defmethod fetch :venues
+  [k {gid :group-id} con]
+  (-> (venue-query gid)
+      (s/where `(= :venue-type
+                   ~(->VenueType "'physical'")))
       f/format
       (->> (j/query con)
            (map format-venue))))
 
-(defmethod fetch :groups
+(defmethod fetch :online-venues
   [k {gid :group-id} con]
+  (-> (venue-query gid)
+      (s/where `(= :venue-type
+                   ~(->VenueType "'online'")))
+      f/format
+      (->> (j/query con)
+           (map format-online-venue))))
+
+(defn find-group-admins [gid con]
+  (j/query con
+           (-> (s/select :member-id :first-name :last-name :email)
+               (s/from [:groups_members :gm])
+               (s/join :members
+                       '(= :gm.member-id :members.id ))
+               (s/where `(= :group-id ~gid))
+               f/format)
+           {:identifiers ->kebab-case}))
+
+(defn find-group-venues [gid con]
+  (let [venues (->> (j/query con
+                             (-> (s/select :*)
+                                 (s/from :venues)
+                                 (s/where `(= :group-id ~gid))
+                                 f/format)
+                             {:identifiers ->kebab-case})
+                    (group-by :venue-type))]
+    {:online-venues (map format-online-venue (get venues "online"))
+     :venues (map format-venue (get venues "physical"))}))
+
+(defmethod fetch :groups
+  [k _ con]
   (let []
     (->> (select* con :groups)
          (map (comp
                #(dissoc % :created_at)
+               #(assoc % :meetups (fetch :meetups {:group-id (:group-id %)} con))
+               #(merge % (find-group-venues (:group-id %) con))
+               #(assoc % :admin (find-group-admins (:group-id %) con))
                #(set/rename-keys % {:id :group-id
                                     :name :group-name}))))))
 
@@ -79,6 +137,8 @@
         (set/rename-keys {:id :event-id})
         (assoc :venue
                (format-venue (select*-by-id con :venues (:venue_id m))))
+        (assoc :online-venue
+               (format-online-venue (select*-by-id con :venues (:online_venue_id m))))
         (assoc :members
                (-> (s/select :*)
                    (s/from :meetups-members)
@@ -92,12 +152,15 @@
 
 (defmethod fetch :meetups
   [k {gid :group-id} con]
-  (->> (select* con :meetups)
-       (map (fn [{:as m v :venue_id e :id}]
+  (->> (select* con :meetups
+                #(s/where % `(= :group-id ~gid)))
+       (map (fn [{:as m v :venue_id e :id ov :online_venue_id}]
               (-> m
                   (set/rename-keys {:id :event-id})
                   (assoc :venue
                          (format-venue (select*-by-id con :venues v)))
+                  (assoc :online-venue
+                         (format-online-venue (select*-by-id con :venues ov)))
                   (assoc :members
                          (-> (s/select :*)
                              (s/from :meetups-members)
@@ -107,7 +170,7 @@
                              f/format
                              (->> (j/query con)
                                   (map #(dissoc % :meetup-id :id)))))
-                  (dissoc :venue_id))))))
+                  (dissoc :venue_id :online_venue_id))))))
 
 (defmethod fetch :default
   [k _ _]
@@ -117,14 +180,20 @@
   (fn [k params con] k))
 
 (defmethod store :store-meetup
-  [k {t :title g :group-id s :start-at e :end-at v :venue-id} con]
-  (j/insert! con
-             :meetups
-             {:title t
-              :group_id g
-              :start_at (Timestamp/from (Instant/parse s))
-              :end_at (Timestamp/from (Instant/parse e))
-              :venue_id v}))
+  [k {t :title g :group-id s :start-at e :end-at
+      v :venue-id ov :online-venue-id} con]
+  (let [[stored]
+        (j/insert! con
+                   :meetups
+                   {:title t
+                    :group_id g
+                    :start_at (Timestamp/from (Instant/parse s))
+                    :end_at (Timestamp/from (Instant/parse e))
+                    :venue_id v
+                    :online_venue_id ov})]
+    (fetch :meetup-by-id
+           {:group-id g :event-id (:id stored)}
+           con)))
 
 (defmethod store :store-member
   [k {f :first-name l :last-name e :email} con]
@@ -166,6 +235,21 @@
               :street1 a1
               :street2 a2}))
 
+(defmethod store :store-online-venue
+  [k {g :group-id
+      vname :venue-name
+      url :url}
+   con]
+  (let [[created] (j/insert! con
+                             :venues
+                             {:group_id g
+                              :venue_type (->VenueType "online")
+                              :url url
+                              :name vname})]
+    {:online-venue-id (:id created)
+     :venue-name vname
+     :url url}))
+
 (defmethod store :store-group
   [k {g :group-name
       admins :admin-member-ids} con]
@@ -189,12 +273,3 @@
          (assoc :admin (->> added-admins
                             (map #(fetch :member-by-id {:id %} con))))
          (dissoc :created_at))))
-
-(comment
-  (def con
-    {:dbtype "postgresql"
-     :dbname "meetup"
-     :host "localhost"
-     :user "meetup"
-     :password "password123"
-     :ssl false}))
