@@ -243,7 +243,7 @@
   (let [[created] (j/insert! con
                              :venues
                              {:group_id g
-                              :venue_type (->venue-type "online")
+                              :venue_type (->VenueType "online")
                               :url url
                               :name vname})]
     {:online-venue-id (:id created)
@@ -273,49 +273,3 @@
          (assoc :admin (->> added-admins
                             (map #(fetch :member-by-id {:id %} con))))
          (dissoc :created_at))))
-
-(comment
-  (def con
-    {:dbtype "postgresql"
-     :dbname "meetup"
-     :host "localhost"
-     :user "meetup"
-     :password "password123"
-     :ssl false})
-
-  (fetch :venues nil con)
-  (fetch :online-venues {:group-id 1} con)
-  (store :store-venue
-         {:group-id 1
-          :venue-name "new venue"
-          :address {:postal-code 3833
-                    :prefecture "Okayama"
-                    :city "Kurashiki"
-                    :address1 "street"}}
-         con)
-
-  (store :store-online-venue
-         {:group-id 1
-          :venue-name "new venue"
-          :url "foo.example.com"}
-         con)
-  (store :store-meetup
-         {:title "Learn datalog today"
-          :group-id 1
-          :start-at "2018-02-12T15:49:00.461Z"
-          :end-at "2018-02-12T15:49:00.461Z"
-          :venue-id 1
-          :online-venue-id 17}
-         con)
-  (fetch :meetups
-         {:group-id 1}
-         con)
-  (fetch :groups
-         {}
-         con)
-  (store :join-group
-         {:group-id 1
-          :id 1
-          :admin true}
-         con)
-  )
