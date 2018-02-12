@@ -128,11 +128,13 @@
 (defmethod fetch :meetups
   [k {gid :group-id} con]
   (->> (select* con :meetups)
-       (map (fn [{:as m v :venue_id e :id}]
+       (map (fn [{:as m v :venue_id e :id ov :online_venue_id}]
               (-> m
                   (set/rename-keys {:id :event-id})
                   (assoc :venue
                          (format-venue (select*-by-id con :venues v)))
+                  (assoc :online-venue
+                         (format-online-venue (select*-by-id con :venues ov)))
                   (assoc :members
                          (-> (s/select :*)
                              (s/from :meetups-members)
@@ -142,7 +144,7 @@
                              f/format
                              (->> (j/query con)
                                   (map #(dissoc % :meetup-id :id)))))
-                  (dissoc :venue_id))))))
+                  (dissoc :venue_id :online_venue_id))))))
 
 (defmethod fetch :default
   [k _ _]
@@ -278,5 +280,8 @@
           :end-at "2018-02-12T15:49:00.461Z"
           :venue-id 1
           :online-venue-id 17}
+         con)
+  (fetch :meetups
+         {:group-id 1}
          con)
   )
