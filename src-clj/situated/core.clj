@@ -3,8 +3,16 @@
             [clojure.set :as set]
             [stch.sql :as s]
             [stch.sql.format :as f])
-  (:import java.sql.Timestamp
+  (:import org.postgresql.util.PGobject
+           java.sql.Timestamp
            [java.time Instant LocalDate LocalDateTime]))
+
+(defrecord VenueType [v]
+  f/ToSQL
+  (f/-to-sql [this]
+    (doto (PGobject.)
+      (.setType "venue_type")
+      (.setValue v))))
 
 (defn add-vals [con tbl vals]
   (j/execute! con
@@ -54,11 +62,25 @@
      #(set/rename-keys % {:id :venue-id
                           :name :venue-name}))))
 
-(defmethod fetch :venues
-  [k {gid :group-id} con]
+(defn venue-query [gid]
   (-> (s/select :*)
       (s/from :venues)
-      (s/where `(= :group_id ~gid))
+      (s/where `(= :group_id ~gid))))
+
+(defmethod fetch :venues
+  [k {gid :group-id} con]
+  (-> (venue-query gid)
+      (s/where `(= :venue-type
+                   ~(->VenueType "'physical'")))
+      f/format
+      (->> (j/query con)
+           (map format-venue))))
+
+(defmethod fetch :online-venues
+  [k {gid :group-id} con]
+  (-> (venue-query gid)
+      (s/where `(= :venue-type
+                   ~(->VenueType "'online'")))
       f/format
       (->> (j/query con)
            (map format-venue))))
@@ -197,4 +219,6 @@
      :host "localhost"
      :user "meetup"
      :password "password123"
-     :ssl false}))
+     :ssl false})
+
+  (fetch :venues nil con))
